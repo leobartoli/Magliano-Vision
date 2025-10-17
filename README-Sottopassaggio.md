@@ -246,6 +246,139 @@ def send_email_alert(level_cm, status):
         print(f"✗ Errore invio email: {e}")
         return False
 
+def get_rainfall_from_api(api_type="openweathermap"):
+    """
+    Scarica dati pioggia da servizio meteo esterno.
+    
+    Args:
+        api_type: "openweathermap" o "arpa"
+    
+    Returns:
+        {
+            "is_raining": bool,
+            "rainfall_mm": float,
+            "description": str,
+            "probability": float (0-100)
+        }
+    """
+    
+    if api_type == "openweathermap":
+        API_KEY = os.getenv("OPENWEATHER_API_KEY")
+        CITY = os.getenv("CITY_NAME", "Brescia")
+        
+        url = f"https://api.openweathermap.org/data/2.5/weather?q={CITY}&appid={API_KEY}&lang=it"
+        
+        try:
+            response = requests.get(url, timeout=5)
+            data = response.json()
+            
+            weather = data['weather'][0]['main']
+            description = data['weather'][0]['description']
+            rainfall_mm = data.get('rain', {}).get('1h', 0)
+            
+            is_raining = weather in ['Rain', 'Drizzle', 'Thunderstorm']
+            
+            return {
+                "is_raining": is_raining,
+                "rainfall_mm": rainfall_mm,
+                "description": description,
+                "probability": 100 if is_raining else 0,
+                "source": "OpenWeatherMap"
+            }
+        except Exception as e:
+            print(f"✗ Errore API meteo: {e}")
+            return None
+    
+    elif api_type == "arpa":
+        # Esempio per ARPA (regione-specifica)
+        LAT = os.getenv("LATITUDE", "45.54")
+        LON = os.getenv("LONGITUDE", "10.21")
+        
+        url = f"https://api.arpalombardia.it/raster/meteo/dati?lat={LAT}&lon={LON}"
+        
+        try:
+            response = requests.get(url, timeout=5)
+            data = response.json()
+            
+            rainfall_mm = data.get('precipitation', 0)
+            prob = data.get('probPrec', 0)
+            
+            return {
+                "is_raining": rainfall_mm > 0.5,
+                "rainfall_mm": rainfall_mm,
+                "description": f"Pioggia: {rainfall_mm}mm",
+                "probability": prob,
+                "source": "ARPA"
+            }
+        except Exception as e:
+            print(f"✗ Errore ARPA: {e}")
+            return None
+
+def detect_rainfall(frame, previous_frame, api_data=None):
+    """
+    Rileva pioggia usando ENTRAMBI i metodi:
+    1. Dati API (primario - affidabile)
+    2. Visione frame (backup - se API giù)
+    
+    Restituisce tuple: (is_raining, rainfall_mm, source)
+    """
+    
+    # METODO 1: Dati API (PRIMARIO)
+    if api_data and api_data.get("is_raining"):
+        return (True, api_data.get("rainfall_mm", 0), api_data.get("source", "API"))
+    
+    # METODO 2: Fallback - rileva da frame (se API offline)
+    if previous_frame is None:
+        return (False, 0, "N/A")
+    
+    diff = cv2.absdiff(frame, previous_frame)
+    gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    
+    changed_pixels = cv2.countNonZero(gray_diff > 30)
+    frame_size = frame.shape[0] * frame.shape[1]
+    
+    is_raining_visual = (changed_pixels / frame_size) > 0.15
+    
+    return (is_raining_visual, 0, "Computer Vision (fallback)")
+
+def save_daily_photo(last_daily_photo_time):
+    """
+    Controlla se è passato un giorno da ultima foto giornaliera.
+    Restituisce True se è ora di scattare una foto giornaliera.
+    """
+    now = datetime.now()
+    
+    if last_daily_photo_time is None:
+        return True
+    
+    # Una foto al giorno a mezzogiorno
+    if (now - last_daily_photo_time).days >= 1 and now.hour == 12:
+        return True
+    
+    return False
+
+def take_closeup_photo(frame, zoom_level=2):
+    """
+    Crea una foto ravvicinata (zoom digitale).
+    zoom_level: fattore di zoom (2x = doppio zoom)
+    """
+    height, width = frame.shape[:2]
+    
+    # Calcola centro e area di zoom
+    center_x, center_y = width // 2, height // 2
+    crop_width, crop_height = width // zoom_level, height // zoom_level
+    
+    x1 = max(0, center_x - crop_width // 2)
+    y1 = max(0, center_y - crop_height // 2)
+    x2 = min(width, x1 + crop_width)
+    y2 = min(height, y1 + crop_height)
+    
+    # Ritaglia e ridimensiona alla risoluzione originale
+    cropped = frame[y1:y2, x1:x2]
+    zoomed = cv2.resize(cropped, (width, height))
+    
+    return zoomed
+
 def main():
     """Loop principale di monitoraggio."""
     
@@ -253,9 +386,16 @@ def main():
     cap = cv2.VideoCapture(0)
     
     previous_status = None
+    previous_frame = None
+    last_daily_photo_time = None
+    last_alert_time = {}  # Previene allerte multiple nello stesso minuto
     
     print("🌊 Sottopassaggio Monitor Avviato")
     print(f"Soglie: GIALLO>{SOGLIA_GIALLO}cm | ROSSO>{SOGLIA_ROSSO}cm | CRITICO>{SOGLIA_CRITICO}cm")
+    print("📸 Modalità foto:")
+    print("   - 1 foto giornaliera a mezzogiorno (no movimento)")
+    print("   - Foto ravvicinate in caso di pioggia")
+    print("   - Foto di allarme se supera soglie")
     
     while True:
         ret, frame = cap.read()
@@ -268,6 +408,7 @@ def main():
         
         if level_cm is None:
             print(f"[{datetime.now()}] Nessun livello rilevato")
+            previous_frame = frame
             continue
         
         # Determina lo stato
@@ -280,20 +421,54 @@ def main():
         else:
             status = "NORMALE"
         
-        # Log
-        print(f"[{datetime.now()}] Livello: {level_cm:.1f} cm | Status: {status}")
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
         
+        # Log
+        print(f"[{now}] Livello: {level_cm:.1f} cm | Status: {status}")
+        
+        # ======== FOTOGRAFIA GIORNALIERA ========
+        # 1 foto al giorno quando non passa nessuno (es. mezzogiorno)
+        if save_daily_photo(last_daily_photo_time):
+            daily_filename = f"daily/{now.strftime('%Y%m%d')}_daily_level{level_cm:.0f}cm.jpg"
+            cv2.imwrite(daily_filename, frame)
+            print(f"📸 Foto giornaliera salvata: {daily_filename}")
+            last_daily_photo_time = now
+        
+        # ======== RILEVAMENTO PIOGGIA ========
+        # Foto ravvicinate in caso di pioggia
+        is_raining = detect_rainfall(frame, previous_frame)
+        if is_raining:
+            rain_frame = take_closeup_photo(frame, zoom_level=2)
+            rain_filename = f"rain/{now.strftime('%Y%m%d_%H%M%S')}_pioggia_zoom_level{level_cm:.0f}cm.jpg"
+            cv2.imwrite(rain_filename, rain_frame)
+            print(f"🌧️  Pioggia rilevata! Foto ravvicinata salvata: {rain_filename}")
+        
+        # ======== ALLARMI E FOTO DI EMERGENZA ========
         # Invia allarme se cambio di stato verso alto
         if status != previous_status and status != "NORMALE":
-            send_email_alert(level_cm, status)
+            # Evita allerte multiple nello stesso minuto
+            minute_key = now.strftime("%H:%M")
+            if minute_key not in last_alert_time or (now - last_alert_time[minute_key]).seconds > 60:
+                send_email_alert(level_cm, status)
+                last_alert_time[minute_key] = now
         
         previous_status = status
         
-        # Salva foto ogni allarme
+        # Salva foto di allarme SE supera soglie (+ foto ravvicinata se piove)
         if status != "NORMALE":
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"alerts/{status}_{level_cm:.0f}cm_{timestamp}.jpg"
-            cv2.imwrite(filename, frame)
+            alert_filename = f"alerts/{status}_{level_cm:.0f}cm_{timestamp}.jpg"
+            cv2.imwrite(alert_filename, frame)
+            print(f"🚨 Foto allarme salvata: {alert_filename}")
+            
+            # Se contemporaneamente piove E c'è allarme, salva anche zoom
+            if is_raining:
+                alert_zoom_filename = f"alerts/ZOOM_{status}_{level_cm:.0f}cm_{timestamp}.jpg"
+                alert_frame_zoom = take_closeup_photo(frame, zoom_level=2)
+                cv2.imwrite(alert_zoom_filename, alert_frame_zoom)
+                print(f"🚨 Foto allarme ravvicinata (pioggia + allarme) salvata: {alert_zoom_filename}")
+        
+        previous_frame = frame
         
         # Attendi prima di prossima lettura
         cv2.waitKey(1000)  # 1 secondo
@@ -315,11 +490,25 @@ nano .env
 Inserisci:
 
 ```env
+# Email
 EMAIL_SENDER="comune@gmail.com"
 EMAIL_PASSWORD="password_app_gmail"
 EMAIL_SINDACO="sindaco@comune.it"
 EMAIL_PROTEZIONE_CIVILE="protezione.civile@comune.it"
+
+# SMS (opzionale)
 SMS_API_KEY="chiave_servizio_sms"
+
+# Meteo API (OpenWeatherMap)
+OPENWEATHER_API_KEY="tua_chiave_openweathermap"
+CITY_NAME="Brescia"
+
+# Coordinate (per ARPA)
+LATITUDE="45.54"
+LONGITUDE="10.21"
+
+# Tipo di servizio meteo: "openweathermap" o "arpa"
+WEATHER_SERVICE="openweathermap"
 ```
 
 ### 4.2. Installazione
@@ -358,19 +547,153 @@ SottopassaggioMonitor/
 ├── calibrate_water_level.py
 ├── calibration.json
 ├── .env
-├── alerts/  (cartella per foto di allarme)
+├── daily/           (1 foto al giorno a mezzogiorno)
+├── rain/            (foto ravvicinate quando piove)
+├── alerts/          (foto quando supera soglie)
+│   ├── GIALLO_*.jpg
+│   ├── ROSSO_*.jpg
+│   ├── CRITICO_*.jpg
+│   └── ZOOM_ROSSO_*.jpg  (pioggia + allarme simultanei)
 └── start_monitor.sh
 ```
 
 -----
 
-## 🔄 Flusso Operativo
+## 📸 Logica Fotografica Dettagliata
 
-1. **Ogni 30 secondi**: Fotocamera rileva il livello
-1. **Confronto soglie**: Determina stato (NORMALE, GIALLO, ROSSO, CRITICO)
-1. **Cambio stato**: Invia email di allarme
-1. **Log continuo**: Salva log e foto durante allarmi
-1. **24/7**: Sistema funziona continuamente
+### Flusso Decisionale
+
+```
+OGNI SECONDO
+    ↓
+├─ FOTO GIORNALIERA?
+│  └─ SÌ (se è passato 1 giorno e sono le 12:00)
+│     └─ Salva in /daily/ → "YYYYMMDD_daily_levelXcm.jpg"
+│
+├─ PIOGGIA RILEVATA?
+│  └─ SÌ (movimento rapido tra frame)
+│     └─ Salva foto ravvicinata in /rain/ → "HHMMSS_pioggia_zoom.jpg"
+│
+├─ ALLARME (supera soglia)?
+│  └─ SÌ (GIALLO, ROSSO, CRITICO)
+│     ├─ Salva foto in /alerts/ → "STATUS_levelXcm_HHMMSS.jpg"
+│     ├─ Invia email a Sindaco e Protezione Civile
+│     └─ Se contemporaneamente piove:
+│        └─ Salva anche zoom in /alerts/ZOOM_*.jpg
+│
+└─ ATTENDI 1 secondo, ripeti
+```
+
+### Tipi di Foto Salvate
+
+|Tipo                 |Cartella  |Nome file                          |Quando                         |
+|---------------------|----------|-----------------------------------|-------------------------------|
+|**Giornaliera**      |`/daily/` |`20240115_daily_level23cm.jpg`     |1 volta al giorno a mezzogiorno|
+|**Pioggia**          |`/rain/`  |`145302_pioggia_zoom_level35cm.jpg`|Quando piove (no allarme)      |
+|**Allarme**          |`/alerts/`|`ROSSO_85cm_145302.jpg`            |Quando supera soglie           |
+|**Pioggia + Allarme**|`/alerts/`|`ZOOM_ROSSO_85cm_145302.jpg`       |Contemporaneamente             |
+
+-----
+
+## 🔍 Rilevamento Pioggia
+
+Il sistema confronta due frame consecutivi:
+
+```python
+def detect_rainfall(frame, previous_frame):
+    # Se >15% dei pixel cambia tra frame = pioggia
+    # Funziona anche di notte (gocce di pioggia si vedono)
+    # Evita falsi positivi: calcola solo i cambiamenti rapidi
+```
+
+**Vantaggi:**
+
+- ✅ Funziona 24/7
+- ✅ Rileva pioggia anche leggera
+- ✅ Non dipende da sensori esterni
+
+-----
+
+## 🎯 Scenari Fotografici
+
+### Scenario 1: Giorno Normale
+
+```
+09:00 → Niente (no foto, niente allarme)
+12:00 → 📸 Foto giornaliera in /daily/ (routine check)
+15:00 → Niente
+```
+
+### Scenario 2: Pioggia Leggera (senza allarme)
+
+```
+14:30 → 🌧️ Pioggia rilevata
+       └─ 📸 Foto ravvicinata in /rain/
+       └─ Livello: 30cm (sotto soglia GIALLO)
+15:00 → 🌧️ Ancora pioggia
+       └─ 📸 Altra foto ravvicinata in /rain/
+```
+
+### Scenario 3: Allarme ROSSO senza pioggia
+
+```
+16:45 → ⚠️ Livello sale a 95cm (prossimo ROSSO)
+17:00 → 🚨 Livello raggiunge 102cm (ROSSO!)
+       ├─ 📸 Foto in /alerts/ (ROSSO_102cm_170000.jpg)
+       ├─ 📧 Email a Sindaco e Protezione Civile
+       └─ Log: "ALLARME ROSSO inviato"
+```
+
+### Scenario 4: Pioggia + Allarme CRITICO (Massima Allerta)
+
+```
+18:30 → 🌧️ Pioggia intensa
+18:35 → 🚨 Livello sale a 155cm (CRITICO!)
+       ├─ 📸 Foto normale in /alerts/ (CRITICO_155cm_183500.jpg)
+       ├─ 📸 Foto ravvicinata in /alerts/ (ZOOM_CRITICO_155cm_183500.jpg)
+       ├─ 📧 Email URGENTE a Protezione Civile
+       ├─ 🔴 SMS di allerta (se configurato)
+       └─ Log: "ALLARME CRITICO CON PIOGGIA!"
+```
+
+-----
+
+## 🚀 Setup Cartelle
+
+Crea le cartelle necessarie prima di avviare:
+
+```bash
+mkdir -p daily rain alerts logs
+
+# Dai permessi di scrittura
+chmod 755 daily rain alerts logs
+```
+
+-----
+
+## 📊 Gestione File Foto
+
+### Archiviazione Automatica (Opzionale)
+
+Aggiungi uno script cron per archiviare foto vecchie:
+
+```bash
+# Crontab: Archivia foto di 7 giorni fa
+0 2 * * * tar -czf /backup/foto_$(date +\%Y\%m\%d).tar.gz /home/pi/SottopassaggioMonitor/{daily,rain,alerts} && find /home/pi/SottopassaggioMonitor -name "*.jpg" -mtime +7 -delete
+```
+
+### Visualizzazione Rapida
+
+```bash
+# Foto odierne
+ls -lh daily/ | grep $(date +%Y%m%d)
+
+# Foto degli ultimi allarmi
+ls -lhtr alerts/ | tail -20
+
+# Foto di pioggia
+ls -lh rain/
+```
 
 -----
 
@@ -382,16 +705,24 @@ Verifica log:
 tail -f sottopassaggio_monitor.log
 ```
 
+Conta foto salvate:
+
+```bash
+echo "Foto giornaliere: $(ls daily/*.jpg 2>/dev/null | wc -l)"
+echo "Foto pioggia: $(ls rain/*.jpg 2>/dev/null | wc -l)"
+echo "Foto allarmi: $(ls alerts/*.jpg 2>/dev/null | wc -l)"
+```
+
 Ricalibrare la scala:
 
 ```bash
 python calibrate_water_level.py
 ```
 
-Visualizza foto degli allarmi:
+Pulisci foto di 30 giorni fa:
 
 ```bash
-ls -la alerts/
+find daily rain alerts -name "*.jpg" -mtime +30 -delete
 ```
 
 -----
