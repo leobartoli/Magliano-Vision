@@ -183,12 +183,177 @@ Vision/
 
 -----
 
-## 🛠️ Manutenzione
+## 🌐 6. Connettività 4G/LTE (Opzionale ma Consigliato)
+
+Per installazioni in aree senza Wi-Fi stabile, è consigliato usare un **dongle USB 4G** collegato direttamente al Raspberry Pi.
+
+### 6.1. Perché il 4G
+
+|Vantaggio               |Descrizione                                          |
+|------------------------|-----------------------------------------------------|
+|**Indipendenza di rete**|Nessuna dipendenza da Wi-Fi esterna instabile        |
+|**Affidabilità**        |Connessioni cellulari stabili nelle aree aperte      |
+|**Semplicità**          |Soluzione economica e facile da installare           |
+|**Resilienza**          |Fallback automatico in caso di perdita di connessione|
+
+### 6.2. Componenti Necessari
+
+- **Dongle USB 4G/LTE** (€30-80)
+  - Marche consigliate: Huawei E3372, TP-Link MA260, Sierra MC7455
+  - Plug & play, riconosciuto automaticamente
+  - Include slot per SIM Card
+- **SIM Card dati** — Sottoscritta dal comune
+  - Consumo dati minimo (solo email + log)
+  - Piano base 5-10 GB/mese (€10-15)
+  - Operatori: Vodafone, TIM, Tre
+- **Cavo USB con alimentazione** (opzionale, per dispositivi ad alto consumo)
+
+### 6.3. Installazione Hardware
+
+Semplicissimo:
+
+1. **Spegni il Raspberry Pi**
+1. **Inserisci la SIM card** nel dongle USB 4G
+1. **Collega il dongle a una porta USB** del Pi
+1. **Accendi il Pi**
+
+Il dispositivo viene riconosciuto automaticamente come interfaccia di rete.
+
+Verifica riconoscimento:
+
+```bash
+# Visualizza i dispositivi USB
+lsusb
+
+# Visualizza le interfacce di rete
+ifconfig
+# Dovresti vedere un'interfaccia ppp* o eth* nuova
+```
+
+### 6.4. Configurazione Software (Automatica)
+
+La maggior parte dei dongle 4G moderni si connette **automaticamente** senza configurazione.
+
+Se non si connette, installa il gestore:
+
+```bash
+# Aggiorna il sistema
+sudo apt update
+sudo apt upgrade -y
+
+# Installa ModemManager (gestisce automaticamente connessioni 4G)
+sudo apt install -y modem-manager
+```
+
+Riavvia e il dongle dovrebbe collegarsi da solo:
+
+```bash
+sudo reboot
+```
+
+Verifica la connessione:
+
+```bash
+# Controlla l'IP
+ifconfig
+
+# Prova a pingare
+ping -c 3 8.8.8.8
+```
+
+### 6.5. Verifica dello Status
+
+Crea uno script semplice per monitorare la connessione:
+
+```bash
+nano ~/Downloads/Vision/check_4g_connection.sh
+```
+
+Inserisci:
+
+```bash
+#!/bin/bash
+
+LOG_FILE="/tmp/4g_status.log"
+
+# Controlla connessione internet
+if ping -c 1 8.8.8.8 &> /dev/null; then
+    echo "$(date) - Connessione 4G OK" >> $LOG_FILE
+else
+    echo "$(date) - Connessione 4G OFFLINE" >> $LOG_FILE
+    # Opzionale: riavvia ModemManager
+    sudo systemctl restart modem-manager
+fi
+```
+
+Rendi eseguibile:
+
+```bash
+chmod +x ~/Downloads/Vision/check_4g_connection.sh
+```
+
+Aggiungi a crontab ogni 10 minuti:
+
+```bash
+crontab -e
+```
+
+Aggiungi:
+
+```cron
+# Verifica connessione 4G ogni 10 minuti
+*/10 * * * * /home/settoretecnico/Downloads/Vision/check_4g_connection.sh
+```
+
+### 6.6. Troubleshooting 4G
+
+|Problema                       |Soluzione                                                            |
+|-------------------------------|---------------------------------------------------------------------|
+|**Dongle non riconosciuto**    |Controlla `lsusb`, prova una porta USB diversa                       |
+|**Nessun segnale 4G**          |Verifica copertura operatore, posiziona meglio il dongle             |
+|**Connessione lenta/instabile**|Posiziona il dongle in un punto elevato, lontano da oggetti metallici|
+|**Consumo dati elevato**       |Riduci frequenza foto (es. 30 secondi), comprimi log                 |
+|**Dongle si disconnette**      |Aggiornamento firmware del dongle (vedi sito produttore)             |
+
+### 6.7. Accesso Remoto (Opzionale: ZeroTier)
+
+Se hai bisogno di accedere al Pi via SSH da remoto (per debug/manutenzione):
+
+Installa ZeroTier:
+
+```bash
+curl https://install.zerotier.com | sudo bash
+sudo systemctl enable zerotier-one
+sudo systemctl start zerotier-one
+```
+
+Unisciti a una rete privata:
+
+```bash
+sudo zerotier-cli join [ID_RETE_16_CARATTERI]
+```
+
+Poi potrai accedere da remoto:
+
+```bash
+ssh pi@[IP_ZEROTIER]
+```
+
+-----
+
+## 🛠️ 7. Manutenzione
 
 Verifica log:
 
 ```bash
 tail -f ~/Downloads/Vision/monitor_output.log
+```
+
+Verifica status 4G (se installato):
+
+```bash
+sudo zerotier-cli listnetworks
+tail -f /tmp/4g_health.log
 ```
 
 Riavvio manuale del servizio:
