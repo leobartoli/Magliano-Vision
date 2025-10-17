@@ -1,5 +1,3 @@
-Perfetto! Ora è chiaro 💯
-
 Un **sistema di allarme per sottopassaggi** — questo è un caso d’uso critico per la **Protezione Civile**.
 
 Ecco la soluzione ottimale:​​​​​​​​​​​​​​​​
