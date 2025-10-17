@@ -1,24 +1,54 @@
-🌳 Parco Monitor: Rilevamento Leggero su Raspberry PiQuesto progetto implementa un sistema di Computer Vision estremamente leggero su un Raspberry Pi per monitorare un parco pubblico. Il suo obiettivo è catturare foto a intervalli regolari e salvarle solo se non viene rilevata alcuna figura umana, inviando poi un riepilogo giornaliero via email.Utilizza il Classificatore a Cascata di Haar di OpenCV per garantire un'alta stabilità e un basso consumo di RAM sulla CPU del Raspberry Pi.1. PrerequisitiAssicurati che il tuo sistema Raspberry Pi sia operativo e che tu abbia accesso al terminale.Hardware: Raspberry Pi 4 (4 GB di RAM consigliati) e una fotocamera compatibile (USB o CSI).Software: Python 3.x.Rimozione Ollama: Confermiamo che i modelli LLM pesanti che causavano il memory killing sono stati rimossi.2. Setup dell'Ambiente e DipendenzeÈ essenziale utilizzare un ambiente virtuale per isolare le librerie del progetto.2.1. Creazione e Attivazione dell'AmbienteAssicurati di essere nella cartella corretta (~/Downloads/Vision):Bash# 1. Crea l'ambiente virtuale
-python3 -m venv venv
-
-# 2. Attiva l'ambiente virtuale
-source venv/bin/activate
-# Dovresti vedere (venv) apparire all'inizio del tuo prompt.
-2.2. Installazione delle LibrerieCon l'ambiente virtuale attivo, installa le dipendenze necessarie:Bashpip install opencv-python schedule python-dotenv
-2.3. Download del Modello CVPer il rilevamento di persone (corpi interi) senza utilizzare il modulo DNN instabile, usiamo un classificatore a cascata.Bash# Scarica il file del classificatore di corpi interi (fullbody)
-wget https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_fullbody.xml -O haarcascade_fullbody.xml
-3. Configurazione E-mail (Credenziali)Lo script invia un riepilogo giornaliero e richiede le credenziali SMTP.3.1. Creazione o Verifica del file .envIl file che contiene le credenziali deve essere chiamato .env per essere letto automaticamente dal comando load_dotenv(). (Se insisti nel chiamarlo exampre.env, devi modificarlo nello script).Crea/Modifica il file .env nella cartella del progetto:Snippet di codice# Dati Email
-# USARE LA PASSWORD PER APP (Gmail) per ragioni di sicurezza
-EMAIL_SENDER="tua_email@gmail.com"
-EMAIL_PASSWORD="la_tua_password_app_o_standard" 
-EMAIL_RECIPIENT="destinatario_email@dominio.it"
-4. Esecuzione del Monitoraggio4.1. Avvio e FunzionamentoAssicurati che il tuo file parco_monitor.py sia l'ultima versione che utilizza il Classificatore a Cascata e che l'ambiente virtuale sia attivo.Bashpython parco_monitor.py
-4.2. Logica OperativaComponenteDettagliIntervallo CatturaOgni 5 minuti (300 secondi).Metodo di AnalisiClassificatore a Cascata di Haar (haarcascade_fullbody.xml).Condizione di SalvaLa foto viene salvata SOLO SE il classificatore non rileva corpi umani.Report E-mailInviato ogni giorno alle 21:00.ArchiviazioneLe foto inviate via email vengono spostate da parco_photos/ a archive_photos/.4.3. Esecuzione Persistente (Background)Per far sì che il monitoraggio continui anche dopo aver chiuso il terminale (consigliato per l'uso a lungo termine), utilizza nohup:Bash# Avvia lo script in background. L'output viene salvato in nohup.out.
-nohup python parco_monitor.py & 
-
-# Per controllare lo stato:
-tail -f nohup.out 
-
-# Per fermare il processo, trova il PID e uccidilo (kill):
-ps aux | grep parco_monitor.py 
-# E poi: kill <PID>
+🌳 Parco Monitor: Sistema di Rilevamento Leggero Condizionale (Raspberry Pi)
+Questo progetto implementa un sistema di Computer Vision ottimizzato per l'uso su Raspberry Pi 4. Lo scopo è monitorare continuamente un parco pubblico, con una logica specifica:
+Ricerca Attiva: Il sistema cattura una foto ogni 10 secondi finché non rileva NESSUNA persona. Notifica Istantanea e Pausa: Quando il parco è vuoto, invia una notifica immediata via email e si mette in pausa automatica fino al giorno successivo. Resilienza: Il monitoraggio viene riattivato all'orario predefinito o dopo qualsiasi interruzione di corrente.
+1. Architettura e Motore CV
+Per garantire la massima stabilità e il minimo consumo di RAM sul Raspberry Pi, è stato scelto un approccio estremamente leggero:
+Componente
+Descrizione
+Motore CV
+Classificatore a Cascata di Haar (haarcascade_fullbody.xml). Questo metodo è molto più leggero del modulo DNN (Deep Neural Network), che ha causato problemi di stabilità sull'architettura ARM.
+Logica di Schedulazione
+La logica di Pausa e Ripresa è gestita interamente all'interno del codice Python, utilizzando datetime per calcolare l'orario di riattivazione (es. 06:00 del mattino successivo), eliminando la necessità della libreria schedule.
+Resilienza
+Il riavvio del programma dopo un reboot o un'interruzione di corrente è gestito dal servizio di sistema cron (@reboot).
+2. Setup Iniziale e Dipendenze
+Il progetto risiede nella directory ~/Downloads/Vision/.
+2.1. Prerequisiti
+	•	Raspberry Pi OS (64-bit consigliato)
+	•	Python 3.x
+	•	Fotocamera USB o CSI
+2.2. Installazione (Ambiente Virtuale)
+# Entra nella cartella del progetto cd ~/Downloads/Vision  # 1. Crea e attiva l'ambiente virtuale python3 -m venv venv source venv/bin/activate  # 2. Installa le librerie necessarie # opencv-python: Computer Vision # python-dotenv: Configurazione email pip install opencv-python python-dotenv 
+2.3. Download del Modello CV
+Scarica il modello leggero per il rilevamento di corpi umani (necessario per lo script):
+wget https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_fullbody.xml -O haarcascade_fullbody.xml 
+3. Configurazione E-mail e Credenziali
+Le credenziali SMTP (Gmail o altro) devono essere fornite tramite un file nascosto.
+3.1. Creazione del file .env
+Crea un file chiamato .env nella directory del progetto.
+# Il file deve essere chiamato .env per essere letto automaticamente nano .env 
+Inserisci le tue credenziali e salva:
+# Credenziali email (usare una Password per App se si usa Gmail) EMAIL_SENDER="tua_email@gmail.com" EMAIL_PASSWORD="la_tua_password_app_o_standard"  EMAIL_RECIPIENT="destinatario_email@dominio.it" 
+4. Esecuzione e Gestione del Servizio
+Per garantire il funzionamento continuo (24/7) e la resilienza agli shutdown.
+4.1. Creazione dello Script di Avvio Shell
+Il servizio di sistema richiede uno script wrapper (.sh) per attivare l'ambiente virtuale. Crea il file start_monitor.sh e rendilo eseguibile:
+#!/bin/bash  # Directory di lavoro del progetto cd /home/settoretecnico/Downloads/Vision  # Attiva l'ambiente virtuale source venv/bin/activate  # Avvia lo script Python in background, reindirizzando l'output # Lo script DEVE rimanere in esecuzione continua per gestire la pausa/ripresa nohup python parco_monitor.py > monitor_output.log 2>&1 &  # Deattiva l'ambiente deactivate 
+chmod +x start_monitor.sh 
+4.2. Configurazione della Schedulazione con cron
+Utilizza cron per gestire il riavvio automatico e quello giornaliero.
+crontab -e 
+Aggiungi le seguenti due righe, sostituendo il percorso completo:
+# 1. Riavvia dopo qualsiasi riavvio del sistema (reboot) o interruzione di corrente. @reboot /home/settoretecnico/Downloads/Vision/start_monitor.sh  # 2. Riavvia il monitoraggio ogni giorno alle 06:00 (se per qualche motivo si è fermato inaspettatamente). 0 6 * * * /home/settoretecnico/Downloads/Vision/start_monitor.sh 
+5. Logica Dettagliata dello Script
+Il file parco_monitor.py opera in due stati gestiti internamente al loop principale:
+Stato
+Condizione/Azione
+Ritardo
+STATO ATTIVO
+Persone Rilevate: Continua il ciclo di cattura. Parco Vuoto Rilevato: 1. Salva la foto. 2. Invia email immediata. 3. Imposta IS_PAUSED = True e calcola l'orario di ripresa.
+10 secondi
+STATO PAUSA
+Monitoraggio Sospeso: Il programma attende senza catturare foto. Orario di Ripresa Raggiunto (es. 06:00): Imposta IS_PAUSED = False e riprende immediatamente il monitoraggio attivo.
+5 minuti (tra i controlli dell'orario)
+Questo approccio garantisce che il Raspberry Pi non sprechi energia elaborando immagini durante la notte o una volta che il parco vuoto è stato confermato.
