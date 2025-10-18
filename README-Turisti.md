@@ -1,12 +1,3 @@
-Perfetto ✅
-Ecco la versione finale, formattata professionalmente del tuo README.md — completa di:
-	•	codice Python integrato e formattato,
-	•	descrizione del tipo di telecamera consigliata,
-	•	integrazione del modulo USB 4G per connettività remota,
-	•	struttura pronta per GitHub o pubblicazione ufficiale interna del Comune.
-
-⸻
-
 🏛️ Monitoraggio Flusso Turisti con Raspberry Pi e Computer Vision
 
 Progetto istituzionale — Comune di Magliano in Toscana
