@@ -1,0 +1,235 @@
+services:
+
+# =================================
+# 1. Workflow & Orchestrazione
+# =================================
+
+  n8n:
+    container_name: n8n
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${N8N_HOST}
+      - DB_TYPE=${DB_TYPE}
+      - DB_POSTGRESDB_HOST=${DB_POSTGRESDB_HOST}
+      - DB_POSTGRESDB_PORT=${DB_POSTGRESDB_PORT}
+      - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE}
+      - DB_POSTGRESDB_USER=${DB_POSTGRESDB_USER}
+      - DB_POSTGRESDB_PASSWORD=${DB_POSTGRESDB_PASSWORD}
+      - QUEUE_MODE=${QUEUE_MODE}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
+# =================================
+# 2. Database (pgvector + PostGIS + Relazionale)
+# =================================
+
+  postgres:
+    container_name: postgres
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    container_name: redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# =================================
+# 3. AI
+# =================================
+
+  ollama:
+    container_name: ollama
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - backend
+
+# =================================
+# 4. Storage
+# =================================
+
+  minio:
+    container_name: minio
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      - TZ=${TZ}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - backend
+
+# =================================
+# 5. File Management
+# =================================
+
+  filebrowser:
+    container_name: filebrowser
+    image: filebrowser/filebrowser:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - filebrowser_data:/srv
+      - filebrowser_config:/database
+    networks:
+      - backend
+
+# =================================
+# 6. Home Automation
+# =================================
+
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - homeassistant_data:/config
+    privileged: true
+    networks:
+      - backend
+
+# =================================
+# 7. GIS / QGIS
+# =================================
+
+  qgis-server:
+    container_name: qgis-server
+    image: kartoza/qgis-server:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8082:80"
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - qgis_projects:/projects
+    networks:
+      - backend
+
+# =================================
+# 8. Management / Admin
+# =================================
+
+  adminer:
+    container_name: adminer
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - TZ=${TZ}
+    networks:
+      - backend
+
+# =================================
+# 9. Networking - Remote Access
+# =================================
+
+  zerotier:
+    container_name: zerotier
+    image: zerotier/zerotier:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - ZEROTIER_ONE_NETWORK_IDS=${ZEROTIER_NETWORK_ID}
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - zerotier_data:/var/lib/zerotier-one
+    network_mode: host
+
+  cloudflared:
+    container_name: cloudflared
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - backend
+
+# =================================
+# Volumi
+# =================================
+
+volumes:
+  n8n_data:
+  pg_data:
+  redis_data:
+  ollama_data:
+  minio_data:
+  filebrowser_data:
+  filebrowser_config:
+  homeassistant_data:
+  qgis_projects:
+  zerotier_data:
+
+# =================================
+# Rete
+# =================================
+
+networks:
+  backend:
+    driver: bridge
